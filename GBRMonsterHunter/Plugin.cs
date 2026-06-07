@@ -48,7 +48,7 @@ public sealed class Plugin : IDalamudPlugin
         var combatJobs = new CombatJobService(services, config);
         var monsterRoutePlanner = new MonsterRoutePlanner(services);
         var monsterNavigator = new MonsterNavigator(services, config, lifestream, vnavmesh, rotationDriver, commandBridge, monsterRoutePlanner);
-        var automation = new VulcanDropAutomation(gbr, vulcan, planner, dropHuntList, combatJobs, monsterNavigator);
+        var automation = new VulcanDropAutomation(services, gbr, vulcan, planner, dropHuntList, combatJobs, monsterNavigator);
         window = new MainWindow(config, gbr, lifestream, vnavmesh, rotationDriver, monsterNavigator, dropHuntList, automation, combatJobs);
 
         commands.AddHandler(CommandName, new CommandInfo(OnCommand)
