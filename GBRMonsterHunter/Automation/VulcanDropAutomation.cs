@@ -142,6 +142,9 @@ internal sealed class VulcanDropAutomation(
             return true;
         }
 
+        if (queue?.Paused == false)
+            pausedVulcan = false;
+
         if (!pausedVulcan)
             pausedVulcan = vulcan.PauseQueue(PauseReason);
 
