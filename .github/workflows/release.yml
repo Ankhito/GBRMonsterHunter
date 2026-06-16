@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -55,8 +54,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.package.outputs.zip }}
-          name: GBR Monster Hunter ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}
+          name: GBRMonsterHunter ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          overwrite_files: true
           make_latest: true
 
       - name: Dispatch pluginmaster update
@@ -65,12 +66,11 @@ jobs:
         env:
           GH_TOKEN: ${{ env.SEKHMETPLUGINS_DISPATCH_TOKEN }}
         run: |
-          $releaseTag = "${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}"
           $payload = @{
             event_type = "update-pluginmaster"
             client_payload = @{
               repository = "${{ github.repository }}"
-              tag = $releaseTag
+              tag = "${{ github.ref_name }}"
             }
           } | ConvertTo-Json -Compress
 
