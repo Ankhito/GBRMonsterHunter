@@ -16,10 +16,15 @@ internal sealed class DropLocationProvider(PluginServices services)
 
     private Dictionary<uint, DropItemInfo>? dropsByItemId;
     private HashSet<uint>? knownDropItemIds;
+    private bool localBuildSucceeded;
+    private string? lastLocalBuildError;
+    private bool gatherBuddyBindingChecked;
+    private int gatherBuddyBindingAssemblyCount;
     private Type? gatherBuddyMobDropInfoCacheType;
     private MethodInfo? gatherBuddyGetDropInfoForItem;
     private MethodInfo? gatherBuddyIsKnownDropItem;
     private MethodInfo? gatherBuddyEnsureInitializeStarted;
+    private string? lastGatherBuddyError;
 
     private sealed record MobDropOverrides
     {
@@ -45,22 +50,54 @@ internal sealed class DropLocationProvider(PluginServices services)
     private readonly record struct MobDropLinkKey(uint ItemId, uint BNpcNameId);
     private readonly record struct MobDropSpawnPoint(uint TerritoryTypeId, Vector3 Position);
 
+    public bool LocalDataAvailable
+    {
+        get
+        {
+            EnsureBuilt();
+            return localBuildSucceeded;
+        }
+    }
+
+    public int KnownDropItemCount
+    {
+        get
+        {
+            EnsureBuilt();
+            return knownDropItemIds?.Count ?? 0;
+        }
+    }
+
+    public string? LastLocalBuildError
+    {
+        get
+        {
+            EnsureBuilt();
+            return lastLocalBuildError;
+        }
+    }
+
+    public bool GatherBuddyFallbackAvailable => EnsureGatherBuddyMobDropBindings();
+    public string? LastGatherBuddyError => lastGatherBuddyError;
+
     public DropItemInfo GetDropInfo(uint itemId)
     {
-        if (TryGetGatherBuddyDropInfo(itemId, out var gatherBuddyInfo) && gatherBuddyInfo.Mobs.Count > 0)
-            return gatherBuddyInfo;
-
         EnsureBuilt();
-        return dropsByItemId!.TryGetValue(itemId, out var info) ? info : DropItemInfo.Empty;
+        if (dropsByItemId!.TryGetValue(itemId, out var info) && info.Mobs.Count > 0)
+            return info;
+
+        return TryGetGatherBuddyDropInfo(itemId, out var gatherBuddyInfo) && gatherBuddyInfo.Mobs.Count > 0
+            ? gatherBuddyInfo
+            : DropItemInfo.Empty;
     }
 
     public bool IsKnownDrop(uint itemId)
     {
-        if (TryIsGatherBuddyKnownDrop(itemId, out var known) && known)
+        EnsureBuilt();
+        if (knownDropItemIds!.Contains(itemId))
             return true;
 
-        EnsureBuilt();
-        return knownDropItemIds!.Contains(itemId);
+        return TryIsGatherBuddyKnownDrop(itemId, out var known) && known;
     }
 
     private bool TryIsGatherBuddyKnownDrop(uint itemId, out bool known)
@@ -77,7 +114,7 @@ internal sealed class DropLocationProvider(PluginServices services)
         }
         catch (Exception ex)
         {
-            services.Log.Debug($"Failed to read GatherBuddy mob-drop known state: {ex.GetBaseException().Message}");
+            RecordGatherBuddyError($"Failed to read GatherBuddy mob-drop known state: {ex.GetBaseException().Message}");
             return false;
         }
     }
@@ -100,25 +137,40 @@ internal sealed class DropLocationProvider(PluginServices services)
         }
         catch (Exception ex)
         {
-            services.Log.Debug($"Failed to read GatherBuddy mob-drop locations: {ex.GetBaseException().Message}");
+            RecordGatherBuddyError($"Failed to read GatherBuddy mob-drop locations: {ex.GetBaseException().Message}");
             return false;
         }
     }
 
     private bool EnsureGatherBuddyMobDropBindings()
     {
-        if (gatherBuddyMobDropInfoCacheType != null)
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        if (gatherBuddyBindingChecked
+            && (gatherBuddyGetDropInfoForItem != null || gatherBuddyBindingAssemblyCount == assemblies.Length))
             return gatherBuddyGetDropInfoForItem != null;
 
-        var assembly = AppDomain.CurrentDomain.GetAssemblies()
+        gatherBuddyBindingChecked = true;
+        gatherBuddyBindingAssemblyCount = assemblies.Length;
+        var assembly = assemblies
             .FirstOrDefault(assembly => string.Equals(assembly.GetName().Name, "GatherBuddyReborn", StringComparison.OrdinalIgnoreCase))
-            ?? AppDomain.CurrentDomain.GetAssemblies()
+            ?? assemblies
                 .FirstOrDefault(assembly => assembly.GetType("GatherBuddy.Crafting.MobDropInfoCache") != null);
         gatherBuddyMobDropInfoCacheType = assembly?.GetType("GatherBuddy.Crafting.MobDropInfoCache");
         gatherBuddyGetDropInfoForItem = gatherBuddyMobDropInfoCacheType?.GetMethod("GetDropInfoForItem", BindingFlags.Public | BindingFlags.Static, [typeof(uint)]);
         gatherBuddyIsKnownDropItem = gatherBuddyMobDropInfoCacheType?.GetMethod("IsKnownDropItem", BindingFlags.Public | BindingFlags.Static, [typeof(uint)]);
         gatherBuddyEnsureInitializeStarted = gatherBuddyMobDropInfoCacheType?.GetMethod("EnsureInitializeStarted", BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes);
+        if (gatherBuddyGetDropInfoForItem == null)
+            lastGatherBuddyError = "GatherBuddy mob-drop cache not loaded.";
+        else
+            lastGatherBuddyError = null;
         return gatherBuddyGetDropInfoForItem != null;
+    }
+
+    private void RecordGatherBuddyError(string message)
+    {
+        if (!string.Equals(lastGatherBuddyError, message, StringComparison.Ordinal))
+            services.Log.Debug(message);
+        lastGatherBuddyError = message;
     }
 
     private static DropItemInfo ConvertGatherBuddyDropInfo(object dropInfo)
@@ -207,10 +259,14 @@ internal sealed class DropLocationProvider(PluginServices services)
         try
         {
             dropsByItemId = Build();
+            localBuildSucceeded = true;
+            lastLocalBuildError = null;
         }
         catch (Exception ex)
         {
-            services.Log.Warning(ex, "Failed to build drop location cache.");
+            lastLocalBuildError = ex.GetBaseException().Message;
+            localBuildSucceeded = false;
+            services.Log.Warning(ex, "Failed to build local LuminaSupplemental drop location cache.");
             dropsByItemId = [];
             knownDropItemIds = [];
         }

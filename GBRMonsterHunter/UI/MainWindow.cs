@@ -23,9 +23,13 @@ internal sealed class MainWindow
     private readonly VnavmeshIpc vnavmesh;
     private readonly RotationDriverService rotationDriver;
     private readonly MonsterNavigator monsterNavigator;
+    private readonly DropLocationProvider dropLocations;
+    private readonly MaterialPlanner planner;
     private readonly DropHuntListManager dropHuntList;
     private readonly VulcanDropAutomation automation;
     private readonly CombatJobService combatJobs;
+    private string manualRequestInput = string.Empty;
+    private string manualRequestStatus = "Enter craft result names or material names, one per line.";
 
     public MainWindow(
         Configuration config,
@@ -34,6 +38,8 @@ internal sealed class MainWindow
         VnavmeshIpc vnavmesh,
         RotationDriverService rotationDriver,
         MonsterNavigator monsterNavigator,
+        DropLocationProvider dropLocations,
+        MaterialPlanner planner,
         DropHuntListManager dropHuntList,
         VulcanDropAutomation automation,
         CombatJobService combatJobs)
@@ -44,6 +50,8 @@ internal sealed class MainWindow
         this.vnavmesh = vnavmesh;
         this.rotationDriver = rotationDriver;
         this.monsterNavigator = monsterNavigator;
+        this.dropLocations = dropLocations;
+        this.planner = planner;
         this.dropHuntList = dropHuntList;
         this.automation = automation;
         this.combatJobs = combatJobs;
@@ -80,7 +88,7 @@ internal sealed class MainWindow
     }
 
     public string BuildStatusLine() =>
-        $"GBRMonsterHunter: Vulcan={automation.CurrentPlanName} ({automation.StatusText}), GBR={gbr.Available} ({gbr.LastError ?? gbr.GetStatus()}), Lifestream={lifestream.Available} ({lifestream.LastError ?? "ok"}), vnavmesh={vnavmesh.Available} ({vnavmesh.LastError ?? "ok"}), Rotation={rotationDriver.Available} ({rotationDriver.StatusDetail}), MonsterNav={monsterNavigator.State} ({monsterNavigator.StatusText})";
+        $"GBRMonsterHunter: LocalDrops={dropLocations.LocalDataAvailable} ({dropLocations.KnownDropItemCount} known), Vulcan={automation.CurrentPlanName} ({automation.StatusText}), OptionalGBR={gbr.Available} ({gbr.LastError ?? gbr.GetStatus()}), Lifestream={lifestream.Available} ({lifestream.LastError ?? "ok"}), vnavmesh={vnavmesh.Available} ({vnavmesh.LastError ?? "ok"}), Rotation={rotationDriver.Available} ({rotationDriver.StatusDetail}), MonsterNav={monsterNavigator.State} ({monsterNavigator.StatusText})";
 
     public void RouteActiveDropTarget() => automation.RouteActive();
 
@@ -130,12 +138,12 @@ internal sealed class MainWindow
             ImGui.TextColored(accent, failed ? "Attention" : active ? "Hunting" : "Standing by");
             ImGui.SameLine();
             ImGui.TextUnformatted("GBR Monster Hunter");
-            ImGui.TextColored(TextDim, "Drop-material routing from GatherBuddy Reborn / Vulcan plans.");
+            ImGui.TextColored(TextDim, "Standalone drop-material routing using local game data.");
 
             ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 6);
             DrawPill(automation.HasActiveDropWork ? "Drop Hunt Active" : "No Active Hunt", active ? Accent : TextDim);
             ImGui.SameLine();
-            DrawPill(automation.VulcanPaused ? "Vulcan Paused" : automation.QueueState, automation.VulcanPaused ? Warn : AccentSoft);
+            DrawPill(dropLocations.LocalDataAvailable ? "Local Drops Ready" : "Local Drops Missing", dropLocations.LocalDataAvailable ? Accent : Error);
             ImGui.SameLine();
             DrawPill(monsterNavigator.State.ToString(), failed ? Error : AccentSoft);
             ImGui.SameLine();
@@ -153,13 +161,23 @@ internal sealed class MainWindow
         var location = active?.GetBestLocation();
 
         using (BeginCard("##plan-card", new Vector2(cardW, 112), automation.HasActiveDropWork ? Accent : TextDim))
-            DrawMetric("Vulcan Plan", automation.CurrentPlanName, automation.QueueState);
+            DrawMetric("Plan Source", dropHuntList.Enabled ? dropHuntList.Name : automation.CurrentPlanName, automation.QueueState);
         ImGui.SameLine();
         using (BeginCard("##target-card", new Vector2(cardW, 112), active?.HasRoute == true ? Accent : Warn))
             DrawMetric("Drop Target", active?.ItemName ?? "None", active == null ? dropHuntList.StatusText : $"{active.Missing} remaining");
         ImGui.SameLine();
         using (BeginCard("##nav-card", new Vector2(cardW, 112), monsterNavigator.State == MonsterNavigationState.Failed ? Error : AccentSoft))
             DrawMetric("Navigation", monsterNavigator.State.ToString(), monsterNavigator.StatusText);
+
+        using (BeginCard("##manual", new Vector2(-1, 152), Accent))
+        {
+            DrawSectionTitle("Manual Drop Hunt");
+            ImGui.InputTextMultiline("##manual-request-input", ref manualRequestInput, 2048, new Vector2(-1, 62));
+            if (ImGui.Button("Generate Drop Hunt"))
+                GenerateManualDropHunt();
+            ImGui.SameLine();
+            ImGui.TextColored(TextDim, Fit(manualRequestStatus, ImGui.GetContentRegionAvail().X));
+        }
 
         using (BeginCard("##controls", new Vector2(-1, 118), AccentSoft))
         {
@@ -176,7 +194,7 @@ internal sealed class MainWindow
             if (ImGui.Button("Resume Vulcan"))
                 ResumeVulcan();
             ImGui.SameLine();
-            DrawPill(gbr.Available ? "GBR Available" : "GBR Missing", gbr.Available ? Accent : Error);
+            DrawPill(gbr.Available ? "Optional GBR Available" : "Optional GBR Missing", gbr.Available ? Accent : Warn);
         }
 
         using (BeginCard("##active-target", new Vector2(-1, 150), active?.HasRoute == true ? Accent : Warn))
@@ -218,7 +236,8 @@ internal sealed class MainWindow
         {
             DrawSectionTitle("Routing");
             DrawKeyValue("Teleporter command", config.TeleporterCommandTemplate);
-            DrawKeyValue("Route source", "GatherBuddy mob-drop data, then local fallbacks");
+            DrawKeyValue("Route source", "Local LuminaSupplemental mob-drop data first");
+            DrawKeyValue("Optional integrations", "Vulcan, GatherBuddy Reborn");
             DrawKeyValue("Selection", "same territory, highest spawn count, stable ordering");
         }
 
@@ -268,10 +287,19 @@ internal sealed class MainWindow
             DrawKeyValue("Drop list", $"{dropHuntList.Items.Count} target(s), complete={dropHuntList.IsComplete}");
         }
 
+        using (BeginCard("##drop-data-diagnostics", new Vector2(-1, 132), dropLocations.LocalDataAvailable ? Accent : Error))
+        {
+            DrawSectionTitle("Drop Data Source");
+            DrawKeyValue("Core local data", dropLocations.LocalDataAvailable ? "available" : "unavailable");
+            DrawKeyValue("Known local drop items", dropLocations.KnownDropItemCount.ToString());
+            DrawKeyValue("Local build error", dropLocations.LastLocalBuildError ?? "none");
+            DrawKeyValue("Optional GatherBuddy fallback", dropLocations.GatherBuddyFallbackAvailable ? "available" : dropLocations.LastGatherBuddyError ?? "unavailable");
+        }
+
         using (BeginCard("##dependency-diagnostics", new Vector2(-1, 174), DependenciesReady() ? AccentSoft : Warn))
         {
-            DrawSectionTitle("Dependency Status");
-            DrawKeyValue("GBR", gbr.Available ? $"IPC v{gbr.GetVersion()}: {gbr.GetStatus()}" : gbr.LastError ?? "missing");
+            DrawSectionTitle("Optional Integration Status");
+            DrawKeyValue("GatherBuddy Reborn IPC", gbr.Available ? $"IPC v{gbr.GetVersion()}: {gbr.GetStatus()}" : gbr.LastError ?? "missing");
             DrawKeyValue("Vulcan", automation.VulcanListenerError ?? "ok");
             DrawKeyValue("Lifestream", lifestream.Available ? $"busy={lifestream.IsBusy()}" : lifestream.LastError ?? "missing");
             DrawKeyValue("vnavmesh", vnavmesh.Available ? $"ready={vnavmesh.IsReady()}, moving={vnavmesh.IsNavigating()}" : vnavmesh.LastError ?? "missing");
@@ -332,9 +360,11 @@ internal sealed class MainWindow
 
     private void DrawDependencyPills()
     {
-        DrawPill("GBR", gbr.Available ? Accent : Error);
+        DrawPill("Local data", dropLocations.LocalDataAvailable ? Accent : Error);
         ImGui.SameLine();
-        DrawPill("Vulcan", string.IsNullOrWhiteSpace(automation.VulcanListenerError) ? Accent : Warn);
+        DrawPill("Vulcan optional", string.IsNullOrWhiteSpace(automation.VulcanListenerError) ? Accent : Warn);
+        ImGui.SameLine();
+        DrawPill("GBR optional", gbr.Available ? Accent : Warn);
         ImGui.SameLine();
         DrawPill("Lifestream", lifestream.Available ? Accent : Warn);
         ImGui.SameLine();
@@ -352,7 +382,16 @@ internal sealed class MainWindow
         ImGui.EndTabItem();
     }
 
-    private bool DependenciesReady() => gbr.Available && vnavmesh.Available;
+    private void GenerateManualDropHunt()
+    {
+        var requirements = planner.Plan(manualRequestInput);
+        dropHuntList.Generate(requirements, "Manual Drop Hunt");
+        manualRequestStatus = dropHuntList.Items.Count == 0
+            ? "No missing droppable materials found."
+            : $"Generated {dropHuntList.Items.Count} drop target(s).";
+    }
+
+    private bool DependenciesReady() => dropLocations.LocalDataAvailable && vnavmesh.Available;
 
     private static void DrawMetric(string label, string value, string detail)
     {

@@ -19,7 +19,7 @@ internal sealed class VulcanDropAutomation(
     private uint? routedItemId;
     private bool pausedVulcan;
 
-    public string StatusText { get; private set; } = "Waiting for Vulcan.";
+    public string StatusText { get; private set; } = "Ready for local drop hunts. Vulcan integration is optional.";
     public string CurrentPlanName { get; private set; } = "None";
     public string QueueState { get; private set; } = "None";
     public string CombatJobStatus => combatJobs.StatusText;
@@ -29,12 +29,19 @@ internal sealed class VulcanDropAutomation(
 
     public void Update(MainWindow window)
     {
+        dropHuntList.Refresh();
+
         var snapshot = vulcan.GetActiveExecutionPlan();
         if (snapshot == null)
         {
             ResumeIfNeeded();
             CurrentPlanName = "None";
-            StatusText = vulcan.Available ? "Waiting for Vulcan." : $"Vulcan listener unavailable: {vulcan.LastError}";
+            QueueState = vulcan.Available ? "Vulcan idle" : "Vulcan unavailable";
+            StatusText = HasActiveDropWork
+                ? $"Manual drop hunt active. {dropHuntList.StatusText}"
+                : vulcan.Available
+                    ? "Ready for manual drop hunts. Waiting for optional Vulcan plans."
+                    : $"Ready for manual drop hunts. Optional Vulcan integration unavailable: {vulcan.LastError}";
             return;
         }
 
@@ -53,8 +60,6 @@ internal sealed class VulcanDropAutomation(
             routedItemId = null;
             BuildDropList(snapshot, window);
         }
-
-        dropHuntList.Refresh();
 
         if (!dropHuntList.Enabled || dropHuntList.Items.Count == 0)
         {
