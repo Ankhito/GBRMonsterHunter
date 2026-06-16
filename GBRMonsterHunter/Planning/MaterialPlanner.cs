@@ -86,7 +86,8 @@ internal sealed class MaterialPlanner(PluginServices services, DropLocationProvi
         var craftsNeeded = (int)Math.Ceiling(quantity / (double)resultAmount);
         var hadIngredient = false;
 
-        for (var i = 0; i < 10; i++)
+        var ingredientSlots = Math.Min(recipe.Ingredient.Count, recipe.AmountIngredient.Count);
+        for (var i = 0; i < ingredientSlots; i++)
         {
             var ingredient = recipe.Ingredient[i];
             var amount = (int)recipe.AmountIngredient[i];
