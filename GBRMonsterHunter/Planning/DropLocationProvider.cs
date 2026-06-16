@@ -16,6 +16,8 @@ internal sealed class DropLocationProvider(PluginServices services)
 
     private Dictionary<uint, DropItemInfo>? dropsByItemId;
     private HashSet<uint>? knownDropItemIds;
+    private IReadOnlyList<DroppableItemOption>? droppableItemOptions;
+    private string? lastDroppableIndexError;
     private bool localBuildSucceeded;
     private string? lastLocalBuildError;
     private bool gatherBuddyBindingChecked;
@@ -77,8 +79,44 @@ internal sealed class DropLocationProvider(PluginServices services)
         }
     }
 
+    public int SearchableDropItemCount => GetDroppableItems().Count;
+    public string? LastDroppableIndexError => lastDroppableIndexError;
     public bool GatherBuddyFallbackAvailable => EnsureGatherBuddyMobDropBindings();
     public string? LastGatherBuddyError => lastGatherBuddyError;
+
+    public IReadOnlyList<DroppableItemOption> GetDroppableItems()
+    {
+        EnsureBuilt();
+        if (droppableItemOptions != null)
+            return droppableItemOptions;
+
+        try
+        {
+            var items = services.Data.GetExcelSheet<Item>();
+            droppableItemOptions = knownDropItemIds!
+                .Where(itemId => itemId != 0 && items.TryGetRow(itemId, out _))
+                .Select(itemId =>
+                {
+                    var item = items.GetRow(itemId);
+                    var name = item.Name.ExtractText();
+                    return string.IsNullOrWhiteSpace(name)
+                        ? null
+                        : BuildDroppableItemOption(itemId, name);
+                })
+                .OfType<DroppableItemOption>()
+                .OrderBy(option => option.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(option => option.ItemId)
+                .ToList();
+            lastDroppableIndexError = null;
+        }
+        catch (Exception ex)
+        {
+            lastDroppableIndexError = ex.GetBaseException().Message;
+            droppableItemOptions = [];
+        }
+
+        return droppableItemOptions;
+    }
 
     public DropItemInfo GetDropInfo(uint itemId)
     {
@@ -259,6 +297,7 @@ internal sealed class DropLocationProvider(PluginServices services)
         try
         {
             dropsByItemId = Build();
+            droppableItemOptions = null;
             localBuildSucceeded = true;
             lastLocalBuildError = null;
         }
@@ -269,7 +308,21 @@ internal sealed class DropLocationProvider(PluginServices services)
             services.Log.Warning(ex, "Failed to build local LuminaSupplemental drop location cache.");
             dropsByItemId = [];
             knownDropItemIds = [];
+            droppableItemOptions = [];
         }
+    }
+
+    private DroppableItemOption BuildDroppableItemOption(uint itemId, string name)
+    {
+        var info = dropsByItemId!.TryGetValue(itemId, out var foundInfo) ? foundInfo : DropItemInfo.Empty;
+        var zoneCount = info.Mobs.Sum(mob => mob.Zones.Count);
+        var clusterCount = info.Mobs.Sum(mob => mob.Zones.Sum(zone => zone.Clusters.Count));
+        var hasRouteData = info.Mobs
+            .SelectMany(mob => mob.Zones)
+            .SelectMany(zone => zone.Clusters)
+            .Any(cluster => cluster.HasCoordinates);
+
+        return new DroppableItemOption(itemId, name, info.Mobs.Count, zoneCount, clusterCount, hasRouteData);
     }
 
     private Dictionary<uint, DropItemInfo> Build()

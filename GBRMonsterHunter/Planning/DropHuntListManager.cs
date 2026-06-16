@@ -7,6 +7,7 @@ internal sealed class DropHuntListManager(DropLocationProvider dropLocations)
 
     public string Name { get; private set; } = "Vulcan Drop Hunt (Auto-Generated)";
     public bool Enabled { get; private set; }
+    public bool IsManualHunt => string.Equals(Name, "Manual Drop Hunt", StringComparison.Ordinal);
     public IReadOnlyList<DropHuntListItem> Items => items;
     public DropHuntListItem? ActiveItem => Enabled && activeIndex >= 0 && activeIndex < items.Count ? items[activeIndex] : null;
     public bool IsComplete => items.Count > 0 && items.All(item => item.Complete);

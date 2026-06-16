@@ -19,3 +19,11 @@ internal sealed record DropItemInfo(IReadOnlyList<DropMobInfo> Mobs)
     public static DropItemInfo Empty { get; } = new([]);
     public bool HasData => Mobs.Count > 0;
 }
+
+internal sealed record DroppableItemOption(
+    uint ItemId,
+    string Name,
+    int MobCount,
+    int ZoneCount,
+    int ClusterCount,
+    bool HasRouteData);

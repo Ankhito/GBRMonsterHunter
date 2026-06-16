@@ -16,6 +16,8 @@ internal sealed class MainWindow
     private static readonly Vector4 Warn = new(0.95f, 0.66f, 0.30f, 1f);
     private static readonly Vector4 Error = new(0.92f, 0.32f, 0.34f, 1f);
     private static readonly Vector4 TextDim = new(0.62f, 0.66f, 0.72f, 1f);
+    private const int MaxManualQuantity = 9999;
+    private const int MaxSearchResults = 50;
 
     private readonly Configuration config;
     private readonly GatherBuddyRebornIpc gbr;
@@ -28,8 +30,14 @@ internal sealed class MainWindow
     private readonly DropHuntListManager dropHuntList;
     private readonly VulcanDropAutomation automation;
     private readonly CombatJobService combatJobs;
+    private readonly List<ManualHuntSelection> manualSelections = [];
+    private IReadOnlyList<DroppableItemOption> manualSearchResults = [];
+    private string lastManualSearch = "\0";
+    private string manualSearch = string.Empty;
+    private uint selectedManualItemId;
+    private int manualQuantity = 1;
     private string manualRequestInput = string.Empty;
-    private string manualRequestStatus = "Enter craft result names or material names, one per line.";
+    private string manualRequestStatus = "Search local drop data and add items to a manual hunt.";
 
     public MainWindow(
         Configuration config,
@@ -169,15 +177,7 @@ internal sealed class MainWindow
         using (BeginCard("##nav-card", new Vector2(cardW, 112), monsterNavigator.State == MonsterNavigationState.Failed ? Error : AccentSoft))
             DrawMetric("Navigation", monsterNavigator.State.ToString(), monsterNavigator.StatusText);
 
-        using (BeginCard("##manual", new Vector2(-1, 152), Accent))
-        {
-            DrawSectionTitle("Manual Drop Hunt");
-            ImGui.InputTextMultiline("##manual-request-input", ref manualRequestInput, 2048, new Vector2(-1, 62));
-            if (ImGui.Button("Generate Drop Hunt"))
-                GenerateManualDropHunt();
-            ImGui.SameLine();
-            ImGui.TextColored(TextDim, Fit(manualRequestStatus, ImGui.GetContentRegionAvail().X));
-        }
+        DrawManualHuntCard();
 
         using (BeginCard("##controls", new Vector2(-1, 118), AccentSoft))
         {
@@ -292,7 +292,9 @@ internal sealed class MainWindow
             DrawSectionTitle("Drop Data Source");
             DrawKeyValue("Core local data", dropLocations.LocalDataAvailable ? "available" : "unavailable");
             DrawKeyValue("Known local drop items", dropLocations.KnownDropItemCount.ToString());
+            DrawKeyValue("Searchable drop items", dropLocations.SearchableDropItemCount.ToString());
             DrawKeyValue("Local build error", dropLocations.LastLocalBuildError ?? "none");
+            DrawKeyValue("Drop index error", dropLocations.LastDroppableIndexError ?? "none");
             DrawKeyValue("Optional GatherBuddy fallback", dropLocations.GatherBuddyFallbackAvailable ? "available" : dropLocations.LastGatherBuddyError ?? "unavailable");
         }
 
@@ -373,6 +375,192 @@ internal sealed class MainWindow
         DrawPill(rotationDriver.DriverName, rotationDriver.Available ? Accent : Warn);
     }
 
+    private void DrawManualHuntCard()
+    {
+        using (BeginCard("##manual", new Vector2(-1, 302), Accent))
+        {
+            DrawSectionTitle("Manual Hunt");
+            if (!dropLocations.LocalDataAvailable)
+                ImGui.TextColored(Error, Fit("Drop data unavailable; check Diagnostics.", ImGui.GetContentRegionAvail().X));
+
+            ImGui.SetNextItemWidth(Math.Max(180f, ImGui.GetContentRegionAvail().X * 0.55f));
+            if (ImGui.InputText("Search drops", ref manualSearch, 128))
+                RefreshManualSearchResults(force: true);
+
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(96f);
+            if (ImGui.InputInt("Qty", ref manualQuantity))
+                manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
+            manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
+
+            RefreshManualSearchResults(force: false);
+            DrawManualSearchResults();
+
+            if (ImGui.Button("Add Item"))
+                AddSelectedManualItem();
+            ImGui.SameLine();
+            if (ImGui.Button("Start Hunt"))
+                StartManualHunt();
+            ImGui.SameLine();
+            if (ImGui.Button("Clear"))
+                ClearManualSelections();
+
+            DrawManualSelectionList();
+            ImGui.TextColored(TextDim, Fit(manualRequestStatus, ImGui.GetContentRegionAvail().X));
+
+            if (ImGui.CollapsingHeader("Text input fallback"))
+            {
+                ImGui.InputTextMultiline("##manual-request-input", ref manualRequestInput, 2048, new Vector2(-1, 44));
+                if (ImGui.Button("Generate From Text"))
+                    GenerateManualDropHunt();
+            }
+        }
+    }
+
+    private void DrawManualSearchResults()
+    {
+        var selected = FindDroppableOption(selectedManualItemId);
+        var preview = selected == null
+            ? "No droppable item selected"
+            : FormatDroppableOption(selected);
+
+        if (!ImGui.BeginCombo("Drop item", preview))
+            return;
+
+        if (manualSearchResults.Count == 0)
+        {
+            ImGui.TextColored(TextDim, string.IsNullOrWhiteSpace(manualSearch) ? "Type to search local drop data." : "No matching local drop items.");
+        }
+        else
+        {
+            foreach (var option in manualSearchResults)
+            {
+                if (!ImGui.Selectable(FormatDroppableOption(option), selectedManualItemId == option.ItemId))
+                    continue;
+
+                selectedManualItemId = option.ItemId;
+                manualRequestStatus = option.HasRouteData
+                    ? $"Selected {option.Name}."
+                    : $"Selected {option.Name}; no route data.";
+            }
+        }
+
+        ImGui.EndCombo();
+    }
+
+    private void DrawManualSelectionList()
+    {
+        ImGui.BeginChild("##manual-selected-items", new Vector2(-1, 82), true);
+        if (manualSelections.Count == 0)
+        {
+            ImGui.TextColored(TextDim, "No manual hunt items selected.");
+            ImGui.EndChild();
+            return;
+        }
+
+        for (var i = 0; i < manualSelections.Count; i++)
+        {
+            var selection = manualSelections[i];
+            ImGui.PushID((int)selection.ItemId);
+            if (ImGui.SmallButton("Remove"))
+            {
+                manualSelections.RemoveAt(i);
+                manualRequestStatus = $"Removed {selection.Name}.";
+                ImGui.PopID();
+                break;
+            }
+
+            ImGui.SameLine();
+            var routeText = selection.HasRouteData ? "route data" : "no route data";
+            ImGui.TextUnformatted(Fit($"{selection.Name} x{selection.Quantity} - {routeText}", ImGui.GetContentRegionAvail().X));
+            ImGui.PopID();
+        }
+
+        ImGui.EndChild();
+    }
+
+    private void RefreshManualSearchResults(bool force)
+    {
+        var search = manualSearch.Trim();
+        if (!force && string.Equals(search, lastManualSearch, StringComparison.Ordinal))
+            return;
+
+        lastManualSearch = search;
+        var options = dropLocations.GetDroppableItems();
+        manualSearchResults = string.IsNullOrWhiteSpace(search)
+            ? options.Take(MaxSearchResults).ToList()
+            : options
+                .Where(option => option.Name.Contains(search, StringComparison.OrdinalIgnoreCase))
+                .Take(MaxSearchResults)
+                .ToList();
+
+        if (selectedManualItemId != 0 && manualSearchResults.All(option => option.ItemId != selectedManualItemId))
+            selectedManualItemId = 0;
+    }
+
+    private void AddSelectedManualItem()
+    {
+        if (!dropLocations.LocalDataAvailable)
+        {
+            manualRequestStatus = "Drop data unavailable; check Diagnostics.";
+            return;
+        }
+
+        var option = FindDroppableOption(selectedManualItemId);
+        if (option == null)
+        {
+            manualRequestStatus = "No droppable item selected.";
+            return;
+        }
+
+        manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
+        var index = manualSelections.FindIndex(selection => selection.ItemId == option.ItemId);
+        if (index >= 0)
+        {
+            var existing = manualSelections[index];
+            var quantity = Math.Clamp(existing.Quantity + manualQuantity, 1, MaxManualQuantity);
+            manualSelections[index] = existing with { Quantity = quantity };
+            manualRequestStatus = $"Updated {option.Name} to x{quantity}.";
+            return;
+        }
+
+        manualSelections.Add(new ManualHuntSelection(option.ItemId, option.Name, manualQuantity, option.HasRouteData));
+        manualRequestStatus = option.HasRouteData
+            ? $"Added {manualQuantity}x {option.Name}."
+            : $"Added {manualQuantity}x {option.Name}; no route data.";
+    }
+
+    private void StartManualHunt()
+    {
+        if (manualSelections.Count == 0)
+        {
+            manualRequestStatus = "Add at least one droppable item before starting a hunt.";
+            return;
+        }
+
+        var materialCounts = manualSelections.ToDictionary(selection => selection.ItemId, selection => selection.Quantity);
+        var requirements = planner.PlanMaterialCounts(materialCounts);
+        dropHuntList.Generate(requirements, "Manual Drop Hunt");
+
+        if (dropHuntList.Items.Count == 0)
+        {
+            manualRequestStatus = "No missing droppable materials found.";
+            return;
+        }
+
+        var noRouteCount = dropHuntList.Items.Count(item => !item.HasRoute);
+        manualRequestStatus = noRouteCount == 0
+            ? $"Generated {dropHuntList.Items.Count} drop target(s)."
+            : $"Generated {dropHuntList.Items.Count} drop target(s); {noRouteCount} without route data.";
+    }
+
+    private void ClearManualSelections()
+    {
+        manualSelections.Clear();
+        selectedManualItemId = 0;
+        manualRequestStatus = "Cleared manual hunt selections.";
+    }
+
     private void DrawTab(string label, Action draw)
     {
         if (!ImGui.BeginTabItem(label))
@@ -390,6 +578,14 @@ internal sealed class MainWindow
             ? "No missing droppable materials found."
             : $"Generated {dropHuntList.Items.Count} drop target(s).";
     }
+
+    private DroppableItemOption? FindDroppableOption(uint itemId) =>
+        itemId == 0 ? null : dropLocations.GetDroppableItems().FirstOrDefault(option => option.ItemId == itemId);
+
+    private static string FormatDroppableOption(DroppableItemOption option) =>
+        option.HasRouteData
+            ? $"{option.Name} - {option.MobCount} mob(s), {option.ZoneCount} zone(s)"
+            : $"{option.Name} - no route data";
 
     private bool DependenciesReady() => dropLocations.LocalDataAvailable && vnavmesh.Available;
 
@@ -519,4 +715,6 @@ internal sealed class MainWindow
             ImGui.PopStyleColor(2);
         }
     }
+
+    private sealed record ManualHuntSelection(uint ItemId, string Name, int Quantity, bool HasRouteData);
 }

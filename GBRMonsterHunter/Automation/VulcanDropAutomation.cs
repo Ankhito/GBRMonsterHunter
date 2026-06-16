@@ -46,6 +46,13 @@ internal sealed class VulcanDropAutomation(
         }
 
         CurrentPlanName = snapshot.ListName;
+        if (dropHuntList.IsManualHunt && dropHuntList.Enabled && !dropHuntList.IsComplete)
+        {
+            QueueState = "Manual hunt active";
+            StatusText = $"Manual drop hunt active. Optional Vulcan plan '{snapshot.ListName}' idle.";
+            return;
+        }
+
         var queue = vulcan.GetQueueSnapshot();
         if (queue == null)
         {
@@ -117,6 +124,12 @@ internal sealed class VulcanDropAutomation(
 
     private void BuildDropList(VulcanExecutionPlanSnapshot snapshot, MainWindow window)
     {
+        if (dropHuntList.IsManualHunt && dropHuntList.Enabled && !dropHuntList.IsComplete)
+        {
+            StatusText = $"Manual drop hunt active; optional Vulcan plan '{snapshot.ListName}' was not imported.";
+            return;
+        }
+
         var requirements = planner.PlanMaterialCounts(snapshot.Materials);
         dropHuntList.Generate(requirements, $"Vulcan Drop Hunt: {snapshot.ListName}");
 
@@ -208,7 +221,7 @@ internal sealed class VulcanDropAutomation(
         var locations = active.GetCandidateLocations(services.ClientState.TerritoryType);
         if (locations.Count == 0)
         {
-            StatusText = $"No route data for {active.ItemName}; Vulcan remains paused.";
+            StatusText = $"No route data for {active.ItemName}.";
             return;
         }
 
