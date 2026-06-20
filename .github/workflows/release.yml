@@ -1,18 +1,21 @@
-name: Release
+name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
-
-env:
-  ANKHITOPLUGINS_DISPATCH_TOKEN: ${{ secrets.ANKHITOPLUGINS_DISPATCH_TOKEN || secrets.SEKHMETPLUGINS_DISPATCH_TOKEN }}
+  actions: write
 
 jobs:
-  build-release:
+  build:
+    if: github.ref_type != 'tag'
     runs-on: windows-latest
 
     steps:
@@ -24,8 +27,32 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Install Dalamud dev files
+        shell: pwsh
+        run: |
+          $hooks = Join-Path $env:APPDATA "XIVLauncher/addon/Hooks/dev"
+          New-Item -ItemType Directory -Force -Path $hooks | Out-Null
+          Invoke-WebRequest -UseBasicParsing "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile "$env:RUNNER_TEMP/dalamud.zip"
+          Expand-Archive "$env:RUNNER_TEMP/dalamud.zip" -DestinationPath $hooks -Force
+
       - name: Restore
         run: dotnet restore Huntsman.slnx
+
+      - name: Build
+        run: dotnet build Huntsman/Huntsman.csproj --configuration Release --no-restore
+
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
 
       - name: Install Dalamud dev files
         shell: pwsh
@@ -34,6 +61,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path $hooks | Out-Null
           Invoke-WebRequest -UseBasicParsing "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile "$env:RUNNER_TEMP/dalamud.zip"
           Expand-Archive "$env:RUNNER_TEMP/dalamud.zip" -DestinationPath $hooks -Force
+
+      - name: Validate tag matches project version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content Huntsman/Huntsman.csproj
+          $version = $project.Project.PropertyGroup.Version
+          $expected = "v$version"
+          if ("${{ github.ref_name }}" -ne $expected) {
+            throw "Tag ${{ github.ref_name }} does not match project version $expected"
+          }
+
+      - name: Restore
+        run: dotnet restore Huntsman.slnx
 
       - name: Build plugin package
         run: dotnet build Huntsman/Huntsman.csproj --configuration Release --no-restore
@@ -63,10 +103,9 @@ jobs:
           make_latest: true
 
       - name: Dispatch pluginmaster update
-        if: ${{ env.ANKHITOPLUGINS_DISPATCH_TOKEN != '' }}
         shell: pwsh
         env:
-          GH_TOKEN: ${{ env.ANKHITOPLUGINS_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $payload = @{
             event_type = "update-pluginmaster"

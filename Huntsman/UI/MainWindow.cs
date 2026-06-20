@@ -102,7 +102,7 @@ internal sealed class MainWindow
         RefreshDependencies();
         DrawHeader();
         ImGui.Spacing();
-        DrawShell();
+        DrawTabs();
 
         ImGui.End();
         HuntsmanTheme.Pop();
@@ -115,7 +115,7 @@ internal sealed class MainWindow
             ImGui.SetWindowFontScale(1.55f);
             ImGui.TextColored(HuntsmanTheme.Gold, "Huntsman");
             ImGui.SetWindowFontScale(1f);
-            ImGui.TextColored(HuntsmanTheme.Dimmed, "Standalone monster-drop hunting for FFXIV.");
+            ImGui.TextColored(HuntsmanTheme.Dimmed, "Route monster drops with local data and clean combat handoff.");
             ImGui.Spacing();
             HuntsmanWidgets.Pill(dropLocations.LocalDataAvailable ? "Local drops ready" : "Local drops missing", dropLocations.LocalDataAvailable ? HuntsmanTheme.Green : HuntsmanTheme.Red);
             ImGui.SameLine();
@@ -160,6 +160,33 @@ internal sealed class MainWindow
                     break;
             }
         }
+    }
+
+    private void DrawTabs()
+    {
+        if (!ImGui.BeginTabBar("##huntsman-tabs"))
+            return;
+
+        DrawTab(Page.Home, "Home", DrawHome);
+        DrawTab(Page.Hunt, "Hunt", DrawHunt);
+        DrawTab(Page.Route, "Active Route", DrawRoute);
+        DrawTab(Page.Settings, "Settings", DrawSettings);
+        DrawTab(Page.Diagnostics, "Diagnostics", DrawDiagnostics);
+
+        ImGui.EndTabBar();
+    }
+
+    private void DrawTab(Page page, string label, Action body)
+    {
+        var flags = currentPage == page ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+        if (!ImGui.BeginTabItem($"{label}###tab_{page}", flags))
+            return;
+
+        currentPage = page;
+        ImGui.Spacing();
+        using (HuntsmanWidgets.Card($"##content-{page}", new Vector2(0f, 0f), HuntsmanTheme.Gold))
+            body();
+        ImGui.EndTabItem();
     }
 
     private void DrawNavItem(Page page, string label)
