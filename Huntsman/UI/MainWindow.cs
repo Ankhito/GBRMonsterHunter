@@ -214,76 +214,26 @@ internal sealed class MainWindow
 
     private void DrawHunt()
     {
-        HuntsmanWidgets.Section("Droppable Item Search");
-        if (!dropLocations.LocalDataAvailable)
-            ImGui.TextColored(HuntsmanTheme.Red, "Drop data unavailable; check Diagnostics.");
+        var width = ImGui.GetContentRegionAvail().X;
+        var leftWidth = MathF.Max(310f, width * 0.42f);
 
-        ImGui.SetNextItemWidth(Math.Max(220f, ImGui.GetContentRegionAvail().X * 0.58f));
-        if (ImGui.InputTextWithHint("##search", "Search local drop data", ref manualSearch, 128))
-            RefreshManualSearchResults(force: true);
+        using (HuntsmanWidgets.Card("##hunt-search", new Vector2(leftWidth, 0f), HuntsmanTheme.Gold))
+            DrawSearchAndSelectionPanel();
 
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(94f);
-        if (ImGui.InputInt("Qty", ref manualQuantity))
-            manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
-        manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
-
-        RefreshManualSearchResults(force: false);
-        DrawManualSearchResults();
-
-        if (HuntsmanWidgets.GoldButton("Add Item"))
-            AddSelectedManualItem();
-        ImGui.SameLine();
-        if (HuntsmanWidgets.GoldButton("Start Hunt"))
-            StartManualHunt(route: true);
-        ImGui.SameLine();
-        if (ImGui.Button("Clear"))
-            ClearManualSelections();
-
-        ImGui.Spacing();
-        DrawManualSelectionList();
-        ImGui.TextColored(HuntsmanTheme.Dimmed, manualRequestStatus);
-
-        if (ImGui.CollapsingHeader("Text input fallback"))
+        using (HuntsmanWidgets.Card("##hunt-queue", new Vector2(0f, 0f), huntController.HasActiveDropWork ? HuntsmanTheme.Gold : HuntsmanTheme.GoldSoft))
         {
-            ImGui.InputTextMultiline("##manual-request-input", ref manualRequestInput, 2048, new Vector2(-1f, 52f));
-            if (HuntsmanWidgets.GoldButton("Generate From Text"))
-                GenerateManualDropHunt();
-        }
-
-        ImGui.Spacing();
-        using (HuntsmanWidgets.Card("##hunt-list", new Vector2(-1f, 150f), huntController.HasActiveDropWork ? HuntsmanTheme.Gold : HuntsmanTheme.Dimmed))
-        {
-            HuntsmanWidgets.Section("Current Hunt List");
-            HuntsmanWidgets.KeyValue("Status", dropHuntList.StatusText);
-            HuntsmanWidgets.KeyValue("Targets", dropHuntList.Items.Count.ToString());
-            HuntsmanWidgets.KeyValue("Active", dropHuntList.ActiveItem?.ItemName ?? "none");
+            DrawGatheringWindow(compact: true);
+            ImGui.Spacing();
+            DrawGeneratedHuntList();
         }
     }
 
     private void DrawRoute()
     {
-        var active = dropHuntList.ActiveItem;
-        var location = monsterNavigator.ActiveLocation ?? active?.GetBestLocation(monsterNavigator.CurrentTerritoryTypeId);
-        var route = monsterNavigator.ActiveRoute;
-
-        HuntsmanWidgets.Section("Active Route");
-        HuntsmanWidgets.KeyValue("Active item", active == null ? "none" : $"{active.ItemName} ({active.Missing} remaining)");
-        HuntsmanWidgets.KeyValue("Selected mob", location?.MobName ?? "none");
-        HuntsmanWidgets.KeyValue("Route destination", route == null ? "none" : $"{route.Destination.X:F1}, {route.Destination.Y:F1}, {route.Destination.Z:F1}");
-        HuntsmanWidgets.KeyValue("Navigation", $"{monsterNavigator.State}: {monsterNavigator.StatusText}");
-        HuntsmanWidgets.KeyValue("Mount", $"{(monsterNavigator.IsMounted ? "mounted" : "not mounted")} - {monsterNavigator.LastMountStatus}");
-        HuntsmanWidgets.KeyValue("Combat", rotationDriver.StatusDetail);
-
+        DrawGatheringWindow(compact: false);
         ImGui.Spacing();
-        if (HuntsmanWidgets.GoldButton("Route Active"))
-            huntController.RouteActive();
-        ImGui.SameLine();
-        if (ImGui.Button("Next"))
-            huntController.Advance();
-        ImGui.SameLine();
-        if (ImGui.Button("Stop"))
-            StopHunt();
+        DrawGeneratedHuntList();
     }
 
     private void DrawSettings()
@@ -361,6 +311,177 @@ internal sealed class MainWindow
             ImGui.TextColored(HuntsmanTheme.Text, title);
             ImGui.TextColored(HuntsmanTheme.Dimmed, detail);
         }
+    }
+
+    private void DrawSearchAndSelectionPanel()
+    {
+        HuntsmanWidgets.Section("Item Search");
+        if (!dropLocations.LocalDataAvailable)
+            ImGui.TextColored(HuntsmanTheme.Red, "Drop data unavailable; check Diagnostics.");
+
+        ImGui.SetNextItemWidth(-1f);
+        if (ImGui.InputTextWithHint("##search", "Search droppable items", ref manualSearch, 128))
+            RefreshManualSearchResults(force: true);
+
+        ImGui.SetNextItemWidth(110f);
+        if (ImGui.InputInt("Qty", ref manualQuantity))
+            manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
+        manualQuantity = Math.Clamp(manualQuantity, 1, MaxManualQuantity);
+
+        RefreshManualSearchResults(force: false);
+        DrawVisualSearchResults();
+
+        if (HuntsmanWidgets.GoldButton("Add Selected"))
+            AddSelectedManualItem();
+        ImGui.SameLine();
+        if (HuntsmanWidgets.GoldButton("Start"))
+            StartManualHunt(route: true);
+        ImGui.SameLine();
+        if (ImGui.Button("Clear"))
+            ClearManualSelections();
+
+        ImGui.Spacing();
+        HuntsmanWidgets.Section("Selected Items");
+        DrawManualSelectionList();
+        ImGui.TextColored(HuntsmanTheme.Dimmed, manualRequestStatus);
+
+        if (ImGui.CollapsingHeader("Text input fallback"))
+        {
+            ImGui.InputTextMultiline("##manual-request-input", ref manualRequestInput, 2048, new Vector2(-1f, 52f));
+            if (HuntsmanWidgets.GoldButton("Generate From Text"))
+                GenerateManualDropHunt();
+        }
+    }
+
+    private void DrawVisualSearchResults()
+    {
+        ImGui.Spacing();
+        using (HuntsmanWidgets.Card("##search-results", new Vector2(-1f, 205f), HuntsmanTheme.GoldSoft))
+        {
+            if (manualSearchResults.Count == 0)
+            {
+                ImGui.TextColored(HuntsmanTheme.Dimmed, string.IsNullOrWhiteSpace(manualSearch) ? "Type to search local drop data." : "No matching local drop items.");
+                return;
+            }
+
+            foreach (var option in manualSearchResults.Take(18))
+                DrawDroppableSearchRow(option);
+        }
+    }
+
+    private void DrawDroppableSearchRow(DroppableItemOption option)
+    {
+        ImGui.PushID((int)option.ItemId);
+        var selected = selectedManualItemId == option.ItemId;
+        var rowHeight = ImGui.GetFrameHeight() + 12f;
+        var pos = ImGui.GetCursorScreenPos();
+        var size = new Vector2(ImGui.GetContentRegionAvail().X, rowHeight);
+        var clicked = ImGui.Selectable("##drop-row", selected, ImGuiSelectableFlags.None, size);
+        var hovered = ImGui.IsItemHovered();
+        var draw = ImGui.GetWindowDrawList();
+        var bg = selected
+            ? new Vector4(HuntsmanTheme.Gold.X, HuntsmanTheme.Gold.Y, HuntsmanTheme.Gold.Z, 0.16f)
+            : hovered ? new Vector4(1f, 1f, 1f, 0.045f) : HuntsmanTheme.PanelSoft;
+        draw.AddRectFilled(pos, pos + size, ImGui.GetColorU32(bg), 7f);
+        draw.AddRect(pos, pos + size, ImGui.GetColorU32(selected ? HuntsmanTheme.BorderGold : new Vector4(1f, 1f, 1f, 0.08f)), 7f);
+        if (selected)
+            draw.AddRectFilled(pos, new Vector2(pos.X + 3f, pos.Y + size.Y), ImGui.GetColorU32(HuntsmanTheme.Gold), 2f);
+
+        var titleColor = selected ? HuntsmanTheme.Text : option.HasRouteData ? HuntsmanTheme.Text : HuntsmanTheme.Dimmed;
+        draw.AddText(new Vector2(pos.X + 12f, pos.Y + 6f), ImGui.GetColorU32(titleColor), option.Name);
+        var detail = option.HasRouteData
+            ? $"{option.MobCount} mob(s), {option.ZoneCount} zone(s), {option.ClusterCount} cluster(s)"
+            : "No route data";
+        draw.AddText(new Vector2(pos.X + 12f, pos.Y + 6f + ImGui.GetTextLineHeight()), ImGui.GetColorU32(option.HasRouteData ? HuntsmanTheme.GoldSoft : HuntsmanTheme.Red), detail);
+        draw.AddText(new Vector2(pos.X + size.X - 72f, pos.Y + 6f), ImGui.GetColorU32(HuntsmanTheme.Dimmed), $"#{option.ItemId}");
+
+        if (clicked)
+        {
+            selectedManualItemId = option.ItemId;
+            manualRequestStatus = option.HasRouteData ? $"Selected {option.Name}." : $"Selected {option.Name}; no route data.";
+        }
+
+        ImGui.PopID();
+    }
+
+    private void DrawGatheringWindow(bool compact)
+    {
+        var active = dropHuntList.ActiveItem;
+        var location = monsterNavigator.ActiveLocation ?? active?.GetBestLocation(monsterNavigator.CurrentTerritoryTypeId);
+        var route = monsterNavigator.ActiveRoute;
+        var totalNeeded = Math.Max(1, dropHuntList.Items.Sum(item => item.Needed));
+        var totalMissing = dropHuntList.Items.Sum(item => item.Missing);
+        var progress = Math.Clamp(1f - totalMissing / (float)totalNeeded, 0f, 1f);
+
+        HuntsmanWidgets.Section("Active Hunt");
+        HuntsmanWidgets.Pill(huntController.AutoRouting ? "Running" : "Idle", huntController.AutoRouting ? HuntsmanTheme.Green : HuntsmanTheme.Dimmed);
+        ImGui.SameLine();
+        HuntsmanWidgets.Pill(monsterNavigator.State.ToString(), monsterNavigator.State == MonsterNavigationState.Failed ? HuntsmanTheme.Red : HuntsmanTheme.Gold);
+        ImGui.SameLine();
+        HuntsmanWidgets.Pill(monsterNavigator.IsMounted ? "Mounted" : "On foot", monsterNavigator.IsMounted ? HuntsmanTheme.Green : HuntsmanTheme.Dimmed);
+
+        ImGui.ProgressBar(progress, new Vector2(-1f, 18f), $"{MathF.Round(progress * 100f)}%");
+        HuntsmanWidgets.KeyValue("Current item", active == null ? "none" : $"{active.ItemName} x{active.Missing}");
+        HuntsmanWidgets.KeyValue("Target mob", location?.MobName ?? "none");
+        HuntsmanWidgets.KeyValue("Destination", route == null ? "none" : $"{route.AetheryteName} -> {route.Destination.X:F1}, {route.Destination.Y:F1}, {route.Destination.Z:F1}");
+        HuntsmanWidgets.KeyValue("Movement", monsterNavigator.StatusText);
+        if (!compact)
+        {
+            HuntsmanWidgets.KeyValue("Mount", $"{(monsterNavigator.IsMounted ? "mounted" : "not mounted")} - {monsterNavigator.LastMountStatus}");
+            HuntsmanWidgets.KeyValue("Dismount", monsterNavigator.LastDismountStatus);
+            HuntsmanWidgets.KeyValue("Combat", rotationDriver.StatusDetail);
+        }
+
+        ImGui.Spacing();
+        if (HuntsmanWidgets.GoldButton(huntController.AutoRouting ? "Restart Route" : "Start"))
+            huntController.StartAutoRoute();
+        ImGui.SameLine();
+        if (ImGui.Button("Next"))
+            huntController.Advance();
+        ImGui.SameLine();
+        if (ImGui.Button("Stop"))
+            StopHunt();
+    }
+
+    private void DrawGeneratedHuntList()
+    {
+        HuntsmanWidgets.Section("Hunt Items");
+        if (dropHuntList.Items.Count == 0)
+        {
+            ImGui.TextColored(HuntsmanTheme.Dimmed, "No hunt list generated yet.");
+            return;
+        }
+
+        using (HuntsmanWidgets.Card("##generated-items", new Vector2(-1f, 0f), HuntsmanTheme.GoldSoft))
+        {
+            foreach (var item in dropHuntList.Items)
+                DrawHuntItemRow(item);
+        }
+    }
+
+    private void DrawHuntItemRow(DropHuntListItem item)
+    {
+        ImGui.PushID((int)item.ItemId);
+        var active = dropHuntList.ActiveItem?.ItemId == item.ItemId;
+        var rowHeight = ImGui.GetFrameHeight() * 2.05f;
+        var pos = ImGui.GetCursorScreenPos();
+        var size = new Vector2(ImGui.GetContentRegionAvail().X, rowHeight);
+        if (ImGui.Selectable("##hunt-item", active, ImGuiSelectableFlags.None, size))
+            dropHuntList.SetActive(item.ItemId);
+
+        var draw = ImGui.GetWindowDrawList();
+        var color = item.Complete ? HuntsmanTheme.Green : active ? HuntsmanTheme.Gold : HuntsmanTheme.PanelSoft;
+        draw.AddRectFilled(pos, pos + size, ImGui.GetColorU32(active ? new Vector4(HuntsmanTheme.Gold.X, HuntsmanTheme.Gold.Y, HuntsmanTheme.Gold.Z, 0.14f) : HuntsmanTheme.PanelSoft), 7f);
+        draw.AddRect(pos, pos + size, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, active ? 0.55f : 0.20f)), 7f);
+        draw.AddRectFilled(pos, new Vector2(pos.X + 3f, pos.Y + size.Y), ImGui.GetColorU32(color), 2f);
+
+        var best = item.GetBestLocation(monsterNavigator.CurrentTerritoryTypeId);
+        draw.AddText(new Vector2(pos.X + 12f, pos.Y + 6f), ImGui.GetColorU32(HuntsmanTheme.Text), item.ItemName);
+        draw.AddText(new Vector2(pos.X + 12f, pos.Y + 6f + ImGui.GetTextLineHeight()), ImGui.GetColorU32(HuntsmanTheme.Dimmed), best == null ? "No route data" : $"{best.MobName} at {best.MapX:F1}, {best.MapY:F1}");
+        var countText = item.Complete ? "Done" : $"{item.Owned}/{item.Needed}";
+        var countWidth = ImGui.CalcTextSize(countText).X;
+        draw.AddText(new Vector2(pos.X + size.X - countWidth - 12f, pos.Y + 6f), ImGui.GetColorU32(item.Complete ? HuntsmanTheme.Green : HuntsmanTheme.Gold), countText);
+        ImGui.PopID();
     }
 
     private void DrawManualSearchResults()
@@ -472,6 +593,9 @@ internal sealed class MainWindow
 
     private void StartManualHunt(bool route)
     {
+        if (manualSelections.Count == 0 && selectedManualItemId != 0)
+            AddSelectedManualItem();
+
         if (manualSelections.Count == 0)
         {
             manualRequestStatus = "Add at least one droppable item before starting a hunt.";
@@ -494,7 +618,10 @@ internal sealed class MainWindow
             : $"Generated {dropHuntList.Items.Count} drop target(s); {noRouteCount} without route data.";
 
         if (route)
-            huntController.RouteActive();
+        {
+            huntController.StartAutoRoute();
+            currentPage = Page.Route;
+        }
     }
 
     private void ClearManualSelections()
